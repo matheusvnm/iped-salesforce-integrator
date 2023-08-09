@@ -73,14 +73,14 @@ class User:
 class IpedConfig:
 
     def __init__(self, parser):
-        self.users_url = f"{parser['BASE_URL']}{parser['GET_USERS_ENDPOINT']}"
-        self.user_profile_url = f"{parser['BASE_URL']}{parser['GET_USER_PROFILE_ENDPOINT']}"
-        self.all_courses_url = f"{parser['BASE_URL']}{parser['GET_ALL_COURSES_ENDPOINT']}"
-        self.inprogress_courses_url = f"{parser['BASE_URL']}{parser['GET_INPROGRESS_COURSES_ENDPOINT']}"
-        self.finished_courses_url = f"{parser['BASE_URL']}{parser['GET_FINISHED_COURSES_ENDPOINT']}"
+        self.users_url = f"{parser.get('BASE_URL')}{parser.get('GET_USERS_ENDPOINT')}"
+        self.user_profile_url = f"{parser.get('BASE_URL')}{parser.get('GET_USER_PROFILE_ENDPOINT')}"
+        self.all_courses_url = f"{parser.get('BASE_URL')}{parser.get('GET_ALL_COURSES_ENDPOINT')}"
+        self.inprogress_courses_url = f"{parser.get('BASE_URL')}{parser.get('GET_INPROGRESS_COURSES_ENDPOINT')}"
+        self.finished_courses_url = f"{parser.get('BASE_URL')}{parser.get('GET_FINISHED_COURSES_ENDPOINT')}"
 
-        self.token_matriz = parser['TOKEN_MATRIZ']
-        self.token_filial = parser['TOKEN_FILIAL']
+        self.token_matriz = parser.get('TOKEN_MATRIZ')
+        self.token_filial = parser.get('TOKEN_FILIAL')
 
 
 class IpedService:
@@ -229,18 +229,25 @@ class IpedService:
         return json['CURRENT_PAGE'] >= json['TOTAL_PAGES']
 
     def _search_common_user_courses(self, id: int, api_token: str, user_token: str) -> list():
+        logger.info('Buscando cursos para usuários não ilimitados')
+
         form_data = {'api_version': '2', 'user_id': id, 'token': api_token, 'user_token': user_token, 'always_show': 1, 'results': 500}
 
         page = 0
         last_page = False
         courses = list()
         while not last_page:
+            page += 1
+            form_data['page'] = page
             response = post(self.config.all_courses_url, data=form_data)
             self._validate_response(response, ['COURSES', 'CURRENT_PAGE', 'TOTAL_PAGES'])
+
             json = response.json()
             courses_json = json['COURSES']
-            
             for course_doc in courses_json:
+                if course_doc['course_user']['user_course_completed'] == 0:
+                    continue
+
                 course = Course()
                 course.id = course_doc['course_id']
                 course.name = course_doc['course_title']
@@ -251,8 +258,10 @@ class IpedService:
                 course.calculate_finished_hours()
 
                 courses.append(course)                
-                
+
             last_page = self._last_page(json)
+        
+        logger.info(f'Courses={len(courses)}')
 
     def search_user_courses(self, token: str, id: int, user_token: str, user_type: UserType) -> [Course]:
         if user_type == UserType.PLANO_ILIMITADO:
@@ -268,9 +277,9 @@ class IpedService:
 class SalesforceConfig:
 
     def __init__(self, parser):
-        self.client_id = parser['CLIENT_ID']
-        self.client_secret = parser['CLIENT_SECRET']
-        self.dataevents_url = f"{parser['BASE_URL']}{parser['DATAEVENTS_ENDPOINT']}"
+        self.client_id = parser.get('CLIENT_ID')
+        self.client_secret = parser.get('CLIENT_SECRET')
+        self.dataevents_url = f"{parser.get('BASE_URL')}{parser.get('DATAEVENTS_ENDPOINT')}"
 
 
 class SalesforceService:
@@ -280,7 +289,7 @@ class SalesforceService:
 
     def __init__(self, config) -> None:
         self.config = config
-        self.sendbuffer = [User]
+        self.sendbuffer = list()
         self.buffer_size = 0
 
     def append_user_to_sendbuffer(self, user: User) -> None:
@@ -295,13 +304,13 @@ class SalesforceService:
 
     def send_request(self) -> None:
         start_time = time()
-        if len(self.sendbuffer) != 0:
+        if len(self.buffer_size) == 0:
             logger.info('Lista de envio vazia')
             return
 
-        json = self.mount_payload()
-        response = post(self.config.dataevents_url, json=json,
-                        headers=self._get_headers())
+        #json = self.mount_payload()
+        #response = post(self.config.dataevents_url, json=json,
+        #                headers=self._get_headers())
         # self._validate_response(response)
         self.sendbuffer.clear()
         self.buffer_size = 0
