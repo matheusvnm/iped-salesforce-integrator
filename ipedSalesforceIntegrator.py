@@ -8,6 +8,7 @@ from requests import Response, post
 
 # Importações a remover abaixo
 import logging as logger 
+import sys
 
 class UserType(Enum):
 	CURSO_GRATIS = 1
@@ -21,27 +22,29 @@ class UserType(Enum):
 class CourseState(str, Enum):
     CONCLUIDO = 'Concluído'
     CURSANDO = 'Cursando'
-    CANCELADO = 'Cancelado'
-
+    CANCELADO = 'Cancelado' # Não existe nos endpoints de cursos
 
 class Course:
 
-    def __init__(self, id: str, name: str, hours: int, finished_hours: float, conclusion_rate: str, 
-                initial_date: datetime, conclusion_date: datetime, last_access: datetime, 
-                state: CourseState, points: int, rate: int, brief: str) -> None:
-        self.id = id
-        self.name = name
-        self.hours = hours
-        self.finished_hours = finished_hours
-        self.conclusion_rate = conclusion_rate
-        self.initial_date = initial_date
-        self.conclusion_date = conclusion_date
-        self.last_access = last_access
-        self.state = state
-        self.points = points
-        self.rate = rate
-        self.brief = brief
+	def __init__(self) -> None:
+		self.id = ''
+		self.name = ''
+		self.rate = ''
+		self.hours = 0
+		self.points = 0
+		self.finished_hours = 0
+		self.conclusion_rate = 0
+		self.initial_date = '' # Somente no Endpoint de cursos em concluídos
+		self.conclusion_date = '' # Somente no Endpoint de cursos em concluídos
+		self.last_access = '' # Não existe nos endpoints de cursos
+		self.state = '' # Não existe nos endpoints de cursos
 
+	def calculate_finished_hours(self) -> None:
+		self.finished_hours = round(self.hours * (self.conclusion_rate / 100), 1)
+		self.state = CourseState.CONCLUIDO if self.conclusion_rate == 100 else CourseState.CURSANDO
+
+	def __str__(self) -> str:
+		return f'Course(id={self.id}, name={self.name}, rate={self.rate}, hours={self.hours}, points={self.points}, finished_hours={self.finished_hours}, conclusion_rate={self.conclusion_rate}, initial_date={self.initial_date}, conclusion_date={self.conclusion_date}, last_access={self.last_access}, state={self.state})'
 
 class User:
 
@@ -61,112 +64,244 @@ class User:
 	def __str__(self) -> str:
 		return f'User(id={self.id}, name={self.name}, type={self.type}, cpf={self.cpf}, email={self.email}, cellphone={self.cellphone}, trilhas={self.trilhas}, courses={self.courses})'
 
+class IpedConfig:
+	
+	def __init__(self, parser):
+		self.users_url = f"{parser['BASE_URL']}{parser['GET_USERS_ENDPOINT']}"
+		self.user_profile_url = f"{parser['BASE_URL']}{parser['GET_USER_PROFILE_ENDPOINT']}"
+		self.all_courses_url = f"{parser['BASE_URL']}{parser['GET_ALL_COURSES_ENDPOINT']}"
+		self.inprogress_courses_url = f"{parser['BASE_URL']}{parser['GET_INPROGRESS_COURSES_ENDPOINT']}"
+		self.finished_courses_url = f"{parser['BASE_URL']}{parser['GET_FINISHED_COURSES_ENDPOINT']}"
+
+		self.token_matriz = parser['TOKEN_MATRIZ']
+		self.token_filial = parser['TOKEN_FILIAL']
+
 class IpedService:
 
-	def __init__(self, config: dict) -> None:
-		self._get_users_url = config.get('GET_USERS_URL')
-		self._get_courses_url = config.get('GET_COURSES_URL')
-		self._get_user_profile_url = config.get('GET_USER_PROFILE_URL')
-		self._token_matriz = config.get('TOKEN_MATRIZ')
-		self._token_filial = config.get('TOKEN_FILIAL')
-        
-	def _search_all_users(self) -> Dict[int, str]:
-		logger.info('Buscando usuários na matriz')
+	def __init__(self, config: IpedConfig) -> None:
+		self.config = config
+		 
+	def search_user_basic_info(self) -> [User]:
+		logger.info('Buscando usuários na empresa matriz')
 		start_time = time()
-		user_json = self._do_get_users_request(self._token_matriz)
+		user_json = self._do_get_users_request(self.config.users_url, self.config.token_matriz)
 
-		logger.info('Processando usuários da matriz')
 		users = dict()
 		for user in user_json:
 			id = user['user_id']
 			users[id] = User(id, user['user_name'], user['user_token'])
 
-		logger.info('Buscando usuários da filial')
-		user_json = self._do_get_users_request(self._token_filial)
+		logger.info('Buscando usuários na empresa filial')
+		user_json = self._do_get_users_request(self.config.users_url, self.config.token_filial)
 
-		logger.info('Processando usuários da filial')
 		for user in user_json:
 			id = user['user_id']
 			if id not in users:
 				users[id] = User(id, user['user_name'], user['user_token'], True)
 
-		logger.info(f'Foram encontrados {len(users)} usuários no total : Time={round(time() - start_time, 1)}s')
-		return users
+		logger.info(f'Success : Users={len(users)} - Time={round(time() - start_time, 1)}s')
+		return list(users.values())
 	
-	def _do_get_users_request(self, token: str) -> Response:
+
+	def _do_get_users_request(self, url: str, token: str) -> Response:
 		form_data = {'api_version': '2', 'token': token}
-		response = post(self._get_users_url, data=form_data)
+		response = post(url, data=form_data)
 		self._validate_response(response, ['USERS'])
 		users = response.json()['USERS']
 		return users
-             
+
+
 	def _validate_response(self, response: Response, mandatory_keys: [str]):
 		if response.status_code != 200:
-			raise Exception(f'Erro ao buscar usuários no IPED: {response.status_code} - {response.text}')
+			raise Exception(f'Erro ao buscar dados no IPED: {response.status_code} - {response.text}')
 
-		if 'STATE' not in response.json().keys():
-			raise Exception(f'Erro ao buscar usuários no IPED: {response.json()}')
+		json = response.json()
+		if 'STATE' not in json:
+			raise Exception(f'Erro ao buscar dados no IPED: {json}')
 		
-		if response.json()['STATE'] != 1:
-			raise Exception(f'Erro ao buscar usuários no IPED: {response.json()}')
+		if json['STATE'] != 1:
+			raise Exception(f'Erro ao buscar dados no IPED: {json}')
 
 		for key in mandatory_keys:
-			if key not in response.json().keys():
-				raise Exception(f'Erro ao buscar usuários no IPED: {response.json()}')
+			if key not in json:
+				raise Exception(f'Erro ao buscar dados no IPED: {json}')
 
 
-	def _search_user_profile(self, id: int, api_token: str, user_token: str) -> User:
-		form_data = {'api_version': '2', 'token': api_token, 'user_id': id, 'user_token': user_token}
-		response = post(self._get_user_profile_url, data=form_data)
+	def search_user_full_info(self, token: str, id: int, user_token: str) -> User:
+		form_data = {'api_version': '2', 'token': token, 'user_id': id, 'user_token': user_token}
+		response = post(self.config.user_profile_url, data=form_data)
 		self._validate_response(response, ['PROFILE'])
 		user_json = response.json()['PROFILE']
 
 		return (user_json['user_cpf'], user_json['user_email'], UserType(user_json['user_type']))
         
-	def _search_user_courses(self, id: int, api_token: str) -> [Course]:
-		form_data = {'api_version': '2', 'token': api_token, 'user_id': id}
-		response = post(self._get_courses_url, data=form_data)
+
+	def _search_unlimited_user_courses(self, id: int, api_token: str, user_token: str) -> list():
+		courses = self._search_inprogress_courses(id, api_token, user_token)
+		finished_courses = self._search_finished_courses(id, api_token, user_token)
+		courses.extend(finished_courses)
+
+
+	def _search_inprogress_courses(self, id: int, api_token: str, user_token: str) -> list():
+		logger.info('Buscando cursos em andamento')
+
+		form_data = {'api_version': '2', 'user_id': id, 'token': api_token, 'user_token': user_token}
+		response = post(self.config.inprogress_courses_url, data=form_data)
 		self._validate_response(response, ['COURSES'])
-		courses_json = response.json()['COURSES']
+		courses_json = response.json()['COURSES']	
 
 		courses = list()
-		for course_json in courses_json:
-			course = Course(course_json)
+		for json in courses_json:
+			course = Course()
+			course.id = json['course_id']
+			course.name = json['course_title']
+			course.rate = json['course_rating']
+			course.hours = json['course_hours']
+			course.points = json['course_user']['user_course_grade']
+			course.conclusion_rate = json['course_user']['user_course_completed']
+			course.calculate_finished_hours()
+
 			courses.append(course)
-		
+
+		logger.info(f'Courses={len(courses)}')
 		return courses
-        
-	def search_users_infos(self) -> dict():
-		logger.info('Buscando todos os usuários do IPED')
-		users = self._search_all_users()
 
-		i = 1
-		total_users = len(users)
 
-		logger.info('Buscando os perfis de cada usuário')
-		for id, user in users.items():
-			logger.info(f'Buscando o perfil do usuário {i} de {total_users} : UserID={id}')
+	def _search_finished_courses(self, id: int, api_token: str, user_token: str) -> list():
+		logger.info('Buscando cursos concluídos')
 
-			start_time = time()
-			api_token = self._token_matriz if not user.filial else self._token_filial
-			(user.cpf, user.email, user.type) = self._search_user_profile(id, api_token, user.token)
-			#user.courses = self._search_user_courses(id, api_token, user.token)
-			logger.info(f'Success : {user} : Time={round(time() - start_time, 1)}s')
+		form_data = {'api_version': '2', 'user_id': id, 'token': api_token, 'user_token': user_token}
+		response = post(self.config.finished_courses_url, data=form_data)
+		self._validate_response(response, ['COURSES'])
+		courses_json = response.json()['COURSES']	
 
-			if i == 5:
-				break
-			i += 1
+		courses = dict()
+		for json in courses_json:
+			course = Course()
+			course.id = json['course_id']
+			course.name = json['course_title']
+			course.initial_date = json['course_date_start']
+			course.conclusion_date = json['course_date_conclusion']
+
+			courses[course.id] = course
+		
+		if len(courses) == 0:
+			logger.info(f'Courses=0')
+			return courses.values()
 	
-		return users
+		page = 0 
+		last_page = False
+		form_data['course_id[]'] = courses.keys()
+		while not last_page:
+			page += 1
+			form_data['page'] = page
+			response = post(self.config.all_courses_url, data=form_data)
+			self._validate_response(response, ['COURSES', 'CURRENT_PAGE', 'TOTAL_PAGES'])
+			json = response.json()
+			courses_json = json['COURSES']	
 
+			for course_doc in courses_json:
+				if course_doc['course_id'] in courses:
+					course = courses[course_doc['course_id']]
+					course.rate = course_doc['course_rating']
+					course.hours = course_doc['course_hours']
+					course.points = course_doc['course_user']['user_course_grade']
+					course.conclusion_rate = course_doc['course_user']['user_course_completed']
+					course.calculate_finished_hours()
+
+			last_page = self._last_page(json)	
+
+		logger.info(f'Courses={len(courses.values())}')
+		return courses.values()
+
+	def _last_page(self, json) -> bool:
+		return json['CURRENT_PAGE'] >= json['TOTAL_PAGES']
+
+	def _search_common_user_courses(self, id: int, api_token: str, user_token: str) -> list():
+		# TODO: Implementar 
+		pass
+
+	def search_user_courses(self, token: str, id: int, user_token: str, user_type: UserType) -> [Course]:
+		if user_type == UserType.PLANO_ILIMITADO:
+			return self._search_unlimited_user_courses(id, token, user_token)
+		else:
+			return self._search_common_user_courses(id, token, user_token)
+
+	def define_token(self, user: User) -> str:
+		return self.config.token_matriz if not user.filial else self.config.token_filial
+
+class SalesforceConfig:
+
+	def __init__(self, parser):
+		self.client_id = parser['CLIENT_ID']
+		self.client_secret = parser['CLIENT_SECRET']
+		self.dataevents_url = f"{parser['BASE_URL']}{parser['DATAEVENTS_ENDPOINT']}"
 
 class SalesforceService:
 
-	def __init__(self, config: dict) -> None:
-		self._client_id = config.get('CLIENT_ID')
-		self._client_secret = config.get('CLIENT_SECRET')
-		self._dataevents_url = config.get('DATAEVENTS_URL')
+	PAYLOAD_LIMIT_IN_BYTES = 2097152 # 5MB é o limite de payload para o Salesforce, porém 2MB é um limite seguro
 
+	def __init__(self, config) -> None:
+		self.config = config
+		self.sendbuffer = [User]
+	
+	def append_user_to_sendbuffer(self, user: User) -> None:
+		self.sendbuffer.append(user)
+	
+	def buffer_ready_to_send(self) -> bool:
+		size_in_bytes = sys.getsizeof(self.sendbuffer)
+		shoud_send = size_in_bytes >= self.PAYLOAD_LIMIT_IN_BYTES
+		logger.info(f'Tamanho da lista de envio {size_in_bytes} : Tamanho Mínimo {self.PAYLOAD_LIMIT_IN_BYTES}')
+		return shoud_send
+
+	def send_request(self) -> None:
+		start_time = time()
+		if len(self.sendbuffer) != 0:
+			logger.info('Lista de envio vazia')
+			return
+		
+		json = self.mount_payload()
+		response = post(self.config.dataevents_url, json=json, headers=self._get_headers())
+		#self._validate_response(response)
+		self.sendbuffer.clear()
+		logger.info(f'Success : Time={round(time() - start_time, 1)}s')
+
+		#TODO: Implementar
+	
+	def mount_payload(self) -> dict():
+		# TODO:
+		pass 
+
+
+class Integrator(object):
+
+	def __init__(self, iped_service: IpedService, salesforce_service: SalesforceService) -> None:
+		self.iped_service = iped_service
+		self.salesforce_service = salesforce_service
+	
+	def run(self):
+		logger.info('Iniciando a busca de usuários no IPED')
+		iped_users = self.iped_service.search_user_basic_info()
+		user_len = len(iped_users)
+
+		logger.info('Iniciando a busca de perfis de usuários no IPED')
+		for i in range(0, user_len, 1):
+			user = iped_users[i]
+			logger.info(f'Buscando informações extras para {i} de {user_len - 1} usuários : ID={user.id} - Nome={user.name}')
+			
+			token = self.iped_service.define_token(user)
+			(user.cpf, user.email, user.type) = self.iped_service.search_user_full_info(token, user.id, user.token)
+
+			logger.info(f'Buscando cursos do usuário')
+			user.courses = self.iped_service.search_user_courses(token, user.id, user.token, user.type)
+
+			logger.info(f'Inserindo usuário na lista de envio para o Salesforce')
+			self.salesforce_service.append_user_to_sendbuffer(user)
+			if self.salesforce_service.buffer_ready_to_send():
+				logger.info(f'Enviando requisição com dados dos usuários para o Salesforce')
+				self.salesforce_service.send_request()
+		
+		self.salesforce_service.send_request() # Se nós buscarmos todos o usuários e não enchermos o buffer, ao final da execução do for, o buffer será enviado.
 
 class IpedSalesforceIntegrator(object): 
 
@@ -174,7 +309,7 @@ class IpedSalesforceIntegrator(object):
 		#super(IpedSalesforceIntegrator, self).__init__(config_filename)
         #self.tryLock(self.pidFile) TODO: Decoment this line after integrating with the main code
 
-		self.module_name = 'Integrador de dados do IPED com o Salesforce'
+		self.module_name = 'Integrador de dados IPED-Salesforce'
 		logger.info(f'Iniciando o módulo {self.module_name}')
 
 		self.config_filename = config_filename
@@ -187,25 +322,14 @@ class IpedSalesforceIntegrator(object):
 		self.configParser.read(self.config_filename) # TODO: Remove this line after integrating with the main code
 
 		section = 'Iped'
-		iped_config_required_fields = ['TOKEN_FILIAL', 'TOKEN_MATRIZ', 'BASE_URL', 'GET_COURSES_ENDPOINT', 'GET_USERS_ENDPOINT', 'GET_USER_PROFILE_ENDPOINT']
+		iped_config_required_fields = ['TOKEN_FILIAL', 'TOKEN_MATRIZ', 'BASE_URL', 'GET_ALL_COURSES_ENDPOINT', 'GET_FINISHED_COURSES_ENDPOINT', 'GET_INPROGRESS_COURSES_ENDPOINT', 'GET_USERS_ENDPOINT', 'GET_USER_PROFILE_ENDPOINT']
 		self._validate_required_args(section, iped_config_required_fields)
-
-		self.iped_config = dict()
-		self.iped_config['GET_COURSES_URL'] = f"{self.configParser.get(section, 'BASE_URL')}{self.configParser.get(section, 'GET_COURSES_ENDPOINT')}"
-		self.iped_config['GET_USERS_URL'] = f"{self.configParser.get(section, 'BASE_URL')}{self.configParser.get(section, 'GET_USERS_ENDPOINT')}"
-		self.iped_config['GET_USER_PROFILE_URL'] = f"{self.configParser.get(section, 'BASE_URL')}{self.configParser.get(section, 'GET_USER_PROFILE_ENDPOINT')}"
-		self.iped_config['TOKEN_MATRIZ'] = self.configParser.get(section, 'TOKEN_MATRIZ')
-		self.iped_config['TOKEN_FILIAL'] = self.configParser.get(section, 'TOKEN_FILIAL')
+		self.iped_config = IpedConfig(self.configParser[section])
 
 		section = 'Salesforce'
 		salesforce_config_required_fields = ['CLIENT_ID', 'CLIENT_SECRET', 'BASE_URL', 'DATAEVENTS_ENDPOINT']
 		self._validate_required_args(section, salesforce_config_required_fields)
-
-		self.salesforce_config = dict()
-		self.salesforce_config['CLIENT_ID'] = self.configParser.get(section, 'CLIENT_ID')
-		self.salesforce_config['CLIENT_SECRET'] = self.configParser.get(section, 'CLIENT_SECRET')
-		self.salesforce_config['DATAEVENTS_URL'] = f"{self.configParser.get(section, 'BASE_URL')}{self.configParser.get(section, 'DATAEVENTS_ENDPOINT')}"
-
+		self.salesforce_config = SalesforceConfig(self.configParser[section])
 
 	def _validate_required_args(self, section, required_fields):
 		if (not self.configParser.has_section(section)):
@@ -220,22 +344,15 @@ class IpedSalesforceIntegrator(object):
 	def run(self):
 		try:
 			start_time = time()
-			iped = IpedService(self.iped_config)
-
-			logger.info('Executando a busca no serviço do IPED')
-			users = iped.search_users_infos()
-			qtd_users = len(users)
-			logger.info(f'Foram encontrados {qtd_users} usuários.')
-
-			#logger.info('Executando a inserção no serviço do Salesforce')
-			#salesforce = SalesforceService(self.salesforce_config)
-			#(inserts, errors) = salesforce.insert_users(users)
-
-			#logger.info(f'Foram inseridos {inserts} usuários com sucesso e {errors} falharam.')
+			iped_service = IpedService(self.iped_config)
+			salesforce_service = SalesforceService(self.salesforce_config)
+			integrator = Integrator(iped_service, salesforce_service)
+			integrator.run()
 			logger.info(f'Success: Time={round(time() - start_time, 1)}s')
 		except Exception as e:
+			e.with_traceback()
 			logger.critical(
-				f'Erro terminal durante a execução do módulo: {str(e)}')
+				f'Erro terminal durante a execução do módulo: {e}')
 
 
 if __name__ == '__main__':
@@ -243,6 +360,7 @@ if __name__ == '__main__':
 		level=logger.INFO,
 		format='%(asctime)s %(levelname)s %(message)s',
 		handlers=[
+			logger.FileHandler("ipedSalesforceIntegrator.log"),
 			logger.StreamHandler()
 		]
 	)
