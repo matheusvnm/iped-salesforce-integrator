@@ -1,4 +1,6 @@
-from ipedSalesforceIntegrator import SalesforceService, SalesforceConfig, User
+from configs import SalesforceConfig
+from services import SalesforceService
+from models import User
 
 def test_append_user_to_salesforce_send_buffer():
     salesforce = SalesforceService(None)
