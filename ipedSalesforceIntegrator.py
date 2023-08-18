@@ -1,12 +1,77 @@
-from time import time
-from configparser import ConfigParser
+import pandas as pd
 
-from models import UserType
-from services import IpedUserService, IpedTrailService, IpedCourseService, SalesforceService
-from configs import IpedUserServiceConfig, IpedTrailServiceConfig, IpedCourseServiceConfig, SalesforceConfig, IpedAuthToken
-
+import requests
 # Importações a remover abaixo
 import logging as logger
+
+from io import StringIO
+from time import time
+from configparser import ConfigParser
+from pandas import DataFrame
+
+
+class TableProcessor(object):
+
+    def __init__(self, dataframe: DataFrame) -> None:
+        self.dataframe = dataframe
+
+    def process(self) -> DataFrame:
+        self._drop_unnecessary_columns()
+        self._standarlize_date_columns()
+        return self.dataframe
+
+    def _drop_unnecessary_columns(self):
+        start_time = time()
+
+        try:
+            logger.info('Removendo colunas desnecessárias')
+            columns = ['Depoimento']
+            self.dataframe.drop(columns, inplace=True, axis=1)
+            logger.info(
+                f'Success : Time = {time() - start_time}s : Removed = {columns}')
+        except Exception as e:
+            logger.error(
+                f'Error : Time = {time() - start_time}s : Exception = {e}')
+
+    def _standarlize_date_columns(self):
+        start_time = time()
+
+        try:
+            logger.info('Padronizando colunas de data')
+            invalid_date = ['0000-00-00 00:00:00']
+            self.dataframe.replace(to_replace=invalid_date, value='', inplace=True)
+            #replace the dateformat from dd/mm/yyyy hh:mm to dd/mm/yyyy
+            self.dataframe['Data Início'] = pd.to_datetime(self.dataframe['Data Início'], format='%d/%m/%Y %H:%M:%S').dt.strftime('%d/%m/%Y')
+            
+            
+            #for column in []
+            #self.dataframe['Data de Nascimento'] = self.dataframe['Data de Nascimento'].str[:10]
+            #self.dataframe['Data de Início'] = self.dataframe['Data de Início'].str[:10]
+
+            logger.info(f'Success : Time = {time() - start_time}s')
+        except Exception as e:
+            logger.error(
+                f'Error : Time = {time() - start_time}s : Exception = {e}')
+
+
+class IpedService(object):
+
+    def __init__(self, url) -> None:
+        self.url = url
+
+    def get_csv_file(self) -> DataFrame:
+        start_time = time()
+        response = requests.get(self.url)
+        if response.status_code != 200:
+            raise Exception(
+                f'Error : Status Code = {response.status_code} : Reason = {response.reason}')
+
+        raw_csv = response.text
+        csv = StringIO(raw_csv)
+        dataframe = pd.read_csv(csv, sep=";")
+
+        logger.info(f'Success : Time = {time() - start_time}s')
+        return dataframe
 
 
 class IpedSalesforceIntegrator(object):
@@ -30,27 +95,18 @@ class IpedSalesforceIntegrator(object):
         self.configParser.read(self.config_filename)
 
         section = 'Iped'
-        iped_config_required_fields = ['TOKEN_FILIAL', 'TOKEN_MATRIZ', 'BASE_URL',
-                                       'GET_TRAILS_ENDPOINT', 'GET_USERS_ENDPOINT', 'GET_USER_PROFILE_ENDPOINT',
-                                       'GET_ALL_COURSES_ENDPOINT', 'GET_FINISHED_COURSES_ENDPOINT', 'GET_INPROGRESS_COURSES_ENDPOINT', 'GET_COURSE_SUMMARY_ENDPOINT'
-                                       ]
+        iped_config_required_fields = ['BASE_URL', 'USERNAME', 'USER_TOKEN']
         self._validate_required_args(section, iped_config_required_fields)
 
-        auth_token = IpedAuthToken(self.configParser[section])
+        required_placeholders = '<USERNAME>:<USER_TOKEN>'
+        url = self.configParser[section]['BASE_URL']
+        if required_placeholders not in url:
+            # TODO: Change to ModuleInitException after integrating with the main code
+            raise Exception(
+                f'O campo BASE_URL deve conter o placeholder {required_placeholders}')
 
-        self.user_config = IpedUserServiceConfig(
-            self.configParser[section], auth_token)
-        self.trail_config = IpedTrailServiceConfig(
-            self.configParser[section], auth_token)
-        self.course_config = IpedCourseServiceConfig(
-            self.configParser[section], auth_token)
-
-        section = 'Salesforce'
-        salesforce_config_required_fields = [
-            'CLIENT_ID', 'CLIENT_SECRET', 'BASE_URL', 'DATAEVENTS_ENDPOINT']
-        self._validate_required_args(
-            section, salesforce_config_required_fields)
-        self.salesforce_config = SalesforceConfig(self.configParser[section])
+        self.iped_url = url.replace(
+            required_placeholders, self.configParser[section]['USERNAME'] + ':' + self.configParser[section]['USER_TOKEN']).replace('\'', '')
 
     def _validate_required_args(self, section, required_fields):
         if (not self.configParser.has_section(section)):
@@ -65,50 +121,22 @@ class IpedSalesforceIntegrator(object):
     def run(self):
         try:
             start_time = time()
-            user_service = IpedUserService(self.user_config)
-            trail_service = IpedTrailService(self.trail_config)
-            course_service = IpedCourseService(self.course_config)
-            salesforce_service = SalesforceService(self.salesforce_config)
+            logger.info(
+                f'Iniciando o processo de integração de dados IPED-Salesforce')
 
-            logger.info('Iniciando a busca de usuários no IPED')
-            users = user_service.get_users_basic_info()
-            user_len = len(users)
+            logger.info(f'Obtendo o arquivo CSV do IPED')
+            iped_service = IpedService(self.iped_url)
+            df = iped_service.get_csv_file()
 
-            logger.info('Iniciando a busca de perfis de usuários no IPED')
-            for i in range(user_len - 1, 0, -1):
-                start_user_time = time()
-                user = users[i]
-                logger.info(f'Processando {i} de {user_len - 1} usuários')
+            logger.info(f'Processando o arquivo CSV')
+            table_processor = TableProcessor(df)
+            df = table_processor.process()
 
-                #logger.info(f'Buscando informações completas do usuário : ID={user.id} - Nome={user.name}')
-                user = user_service.get_user_full_info(user)
-                if user.type != UserType.PLANO_ILIMITADO:
-                    logger.info(f'[DEBUG] ID={user.id} - Type={user.type} - Nome={user.name} - Filial={user.filial}')
-
-                '''
-                logger.info(f'Buscando trilhas do usuário')
-                user = trail_service.get_user_trails(user)
-
-                logger.info(f'Buscando cursos do usuário')
-                user = course_service.get_user_courses(user)
-
-                # TODO: Verificar se a trilha de cursos é necessária
-                logger.info(
-                    f'Inserindo usuário na lista de envio para o Salesforce')
-                salesforce_service.append_user_to_sendbuffer(user)
-
-                if salesforce_service.buffer_ready_to_send():
-                    logger.info(
-                        f'Enviando requisição com dados dos usuários para o Salesforce')
-                    salesforce_service.send_request()
-                
-                logger.info(f'Success : ID={user.id} - Cursos={len(user.courses)} - Trilhas={len(user.trails)} : Time={round(time() - start_user_time, 1)}s')
-
-            # Se nós buscarmos todos o usuários e não enchermos o buffer, ao final da execução do for, o buffer será enviado mesmo sem estar cheio.
-            salesforce_service.send_request()
-            '''
-            logger.info(f'Success: Time={round(time() - start_time, 1)}s')
-
+            logger.info(f'Enviando o arquivo CSV para o Salesforce/SFTP')
+            # salesforce = SalesforceService(df)
+            # salesforce.dispatch_to_sftp()
+            logger.info(
+                f'Success : Processo executado com sucesso em {time() - start_time}s')
         except Exception as e:
             e.with_traceback()
             logger.critical(
