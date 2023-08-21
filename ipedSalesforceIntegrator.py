@@ -45,7 +45,7 @@ class TableProcessor(object):
             self.dataframe.replace(to_replace=invalid_date, value=pd.NaT, inplace=True)
 
             for column in columns:
-                self.dataframe[column] = pd.to_datetime(self.dataframe[column], format='%Y-%m-%d %H:%M:%S').dt.strftime('%d/%m/%Y')
+                self.dataframe[column] = pd.to_datetime(self.dataframe[column], format='mixed').dt.strftime('%d/%m/%Y')
             
             logger.info(f'Success : Time = {round(time() - start_time,1)}s')
         except Exception as e:
@@ -63,7 +63,8 @@ class TableProcessor(object):
             self.dataframe.replace(to_replace=replace_pattern, value='', regex=True, inplace=True)
             logger.info('Adicionando o número DDI no início das colunas')
             for column in columns:
-                 self.dataframe[column] = '55' + self.dataframe[column]
+                self.dataframe[column] = self.dataframe[column].astype(str).replace(to_replace=' ', value='', regex=True)
+                self.dataframe[column] = '55' + self.dataframe[column]
             
             logger.info(f'Success : Time = {round(time() - start_time,1)}s')
         except Exception as e:
@@ -192,8 +193,8 @@ class IpedSalesforceIntegrator(object):
             df = table_processor.process()
 
             logger.info(f'Enviando o arquivo CSV para o Salesforce/SFTP')
-            salesforce = SalesforceService(df)
-            salesforce.send_data()
+            #salesforce = SalesforceService(df)
+            #salesforce.send_data()
 
             #df.to_excel('ipedSalesforceIntegrator.xlsx', index=False)
             #print(df.head())

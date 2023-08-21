@@ -40,14 +40,15 @@ def test_remove_phone_mask():
 	assert processor.dataframe['A'][2] == '5511987654321'
 
 def test_from_percentage_to_decimal():
-	dataframe = pd.DataFrame({'A': ['100%', '50%', '25%']})
+	dataframe = pd.DataFrame({'A': ['100%', '50%', '25%', '0.3%', '2.35%']})
 	processor = TableProcessor(dataframe)
 	processor._from_percentage_to_decimal(columns=['A'])
 
 	assert processor.dataframe['A'][0] == 1.0
 	assert processor.dataframe['A'][1] == 0.5
 	assert processor.dataframe['A'][2] == 0.25
-
+	assert processor.dataframe['A'][3] == 0.003
+	assert processor.dataframe['A'][4] == 0.0235
 
 def test_cut_decimal_values():
 	dataframe = pd.DataFrame({'A': ['1.0', '50.0', '0.32', '0.004', '2.35']})
@@ -60,3 +61,13 @@ def test_cut_decimal_values():
 	assert processor.dataframe['A'][3] == '0h'
 	assert processor.dataframe['A'][4] == '2h'
 
+def test_cut_decimal_with_comma_values():
+	dataframe = pd.DataFrame({'A': ['1,0', '50,0', '0,32', '0,004', '2,35']})
+	processor = TableProcessor(dataframe)
+	processor._cut_decimal_values(columns=['A'])
+
+	assert processor.dataframe['A'][0] == '1h'
+	assert processor.dataframe['A'][1] == '50h'
+	assert processor.dataframe['A'][2] == '0h'
+	assert processor.dataframe['A'][3] == '0h'
+	assert processor.dataframe['A'][4] == '2h'
