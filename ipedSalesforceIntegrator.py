@@ -1,3 +1,4 @@
+import traceback
 import pandas as pd
 
 import requests
@@ -16,43 +17,92 @@ class TableProcessor(object):
         self.dataframe = dataframe
 
     def process(self) -> DataFrame:
-        self._drop_unnecessary_columns()
-        self._standarlize_date_columns()
+        self._drop_columns(columns=['Depoimento'])
+        self._standarlize_dates(columns=['Data Início', 'Último Acesso', 'Data Conclusão'])
+        self._remove_phone_mask(columns=['Contato'])
+        self._from_percentage_to_decimal(columns=['Etapa em curso'])
+        self._cut_decimal_values(columns=['Carga Horária do Colaborador'])
+        self._fill_empty_columns()
         return self.dataframe
 
-    def _drop_unnecessary_columns(self):
+    def _drop_columns(self, columns):
         start_time = time()
-
         try:
             logger.info('Removendo colunas desnecessárias')
-            columns = ['Depoimento']
             self.dataframe.drop(columns, inplace=True, axis=1)
+
             logger.info(
-                f'Success : Time = {time() - start_time}s : Removed = {columns}')
+                f'Success : Time = {round(time() - start_time,1)}s : Removed = {columns}')
         except Exception as e:
             logger.error(
-                f'Error : Time = {time() - start_time}s : Exception = {e}')
+                f'Error : Time = {round(time() - start_time,1)}s : Exception = {e}')
 
-    def _standarlize_date_columns(self):
+    def _standarlize_dates(self, columns):
         start_time = time()
-
         try:
             logger.info('Padronizando colunas de data')
             invalid_date = ['0000-00-00 00:00:00']
-            self.dataframe.replace(to_replace=invalid_date, value='', inplace=True)
-            #replace the dateformat from dd/mm/yyyy hh:mm to dd/mm/yyyy
-            self.dataframe['Data Início'] = pd.to_datetime(self.dataframe['Data Início'], format='%d/%m/%Y %H:%M:%S').dt.strftime('%d/%m/%Y')
-            
-            
-            #for column in []
-            #self.dataframe['Data de Nascimento'] = self.dataframe['Data de Nascimento'].str[:10]
-            #self.dataframe['Data de Início'] = self.dataframe['Data de Início'].str[:10]
+            self.dataframe.replace(to_replace=invalid_date, value=pd.NaT, inplace=True)
 
-            logger.info(f'Success : Time = {time() - start_time}s')
+            for column in columns:
+                self.dataframe[column] = pd.to_datetime(self.dataframe[column], format='%Y-%m-%d %H:%M:%S').dt.strftime('%d/%m/%Y')
+            
+            logger.info(f'Success : Time = {round(time() - start_time,1)}s')
         except Exception as e:
             logger.error(
-                f'Error : Time = {time() - start_time}s : Exception = {e}')
+                f'Error : Time = {round(time() - start_time,1)}s : Exception = {e}')
 
+    def _remove_phone_mask(self, columns):
+        start_time = time()
+        try:
+            logger.info('Removendo caracteres especiais (args:(,),-) das colunas de contato')
+            replace_pattern = {}
+            for column in columns:
+                replace_pattern[column] = r'[\(\)\-]'
+            
+            self.dataframe.replace(to_replace=replace_pattern, value='', regex=True, inplace=True)
+            logger.info('Adicionando o número DDI no início das colunas')
+            for column in columns:
+                 self.dataframe[column] = '55' + self.dataframe[column]
+            
+            logger.info(f'Success : Time = {round(time() - start_time,1)}s')
+        except Exception as e:
+            logger.error(
+                f'Error : Time = {round(time() - start_time,1)}s : Exception = {e}')
+            
+    def _from_percentage_to_decimal(self, columns):
+        start_time = time()
+        try:
+            for column in columns:
+                logger.info(f'Convertendo coluna {column} de porcentagem para decimal (e.g., 80% para 0.8)')
+                self.dataframe[column] = self.dataframe[column].str.replace('%', '').astype(float) / 100
+
+            logger.info(f'Success : Time = {round(time() - start_time,1)}s')
+        except Exception as e:
+            logger.error(f'Error : Time = {round(time() - start_time,1)}s : Exception = {e}')
+
+    def _cut_decimal_values(self, columns):
+        start_time = time()
+        try:
+            logger.info(f'Removendo valores após o ponto/vírgula das colunas e adicionando o sufixo "h" (e.g., 80.5 para 80h)')
+            for column in columns:
+                self.dataframe[column].replace(to_replace=r',', value='.', regex=True, inplace=True)
+                self.dataframe[column] = self.dataframe[column].str.split('.').str[0]
+                self.dataframe[column] = self.dataframe[column].astype(str) + 'h'
+
+            logger.info(f'Success : Time = {round(time() - start_time,1)}s')
+        except Exception as e:
+            logger.error(f'Error : Time = {round(time() - start_time,1)}s : Exception = {e}')
+
+    def _fill_empty_columns(self):
+        start_time = time()
+        try:
+            logger.info('Preenchendo colunas vazias')
+            self.dataframe.fillna('', inplace=True)
+            logger.info(f'Success : Time = {round(time() - start_time,1)}s')
+        except Exception as e:
+            logger.error(f'Error : Time = {round(time() - start_time,1)}s : Exception = {e}')
+            
 
 class IpedService(object):
 
@@ -70,8 +120,17 @@ class IpedService(object):
         csv = StringIO(raw_csv)
         dataframe = pd.read_csv(csv, sep=";")
 
-        logger.info(f'Success : Time = {time() - start_time}s')
+        logger.info(f'Success : Time = {round(time() - start_time,1)}s')
         return dataframe
+
+
+class SalesforceService(object):
+
+    def __init__(self, dataframe) -> None:
+       self.dataframe = dataframe
+    
+    def send_data(self):
+        pass
 
 
 class IpedSalesforceIntegrator(object):
@@ -133,14 +192,15 @@ class IpedSalesforceIntegrator(object):
             df = table_processor.process()
 
             logger.info(f'Enviando o arquivo CSV para o Salesforce/SFTP')
-            # salesforce = SalesforceService(df)
-            # salesforce.dispatch_to_sftp()
-            logger.info(
-                f'Success : Processo executado com sucesso em {time() - start_time}s')
+            salesforce = SalesforceService(df)
+            salesforce.send_data()
+
+            #df.to_excel('ipedSalesforceIntegrator.xlsx', index=False)
+            #print(df.head())
+            logger.info(f'Success : Processo executado com sucesso em {round(time() - start_time,1)}s')
         except Exception as e:
-            e.with_traceback()
             logger.critical(
-                f'Erro terminal durante a execução do módulo: {e}')
+                f'Erro terminal durante a execução do módulo: {e} : {traceback.format_exc()}')
 
 
 if __name__ == '__main__':
@@ -148,7 +208,6 @@ if __name__ == '__main__':
         level=logger.INFO,
         format='%(asctime)s %(levelname)s %(message)s',
         handlers=[
-            logger.FileHandler("ipedSalesforceIntegrator.log"),
             logger.StreamHandler()
         ]
     )
